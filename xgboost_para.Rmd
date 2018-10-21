@@ -1,0 +1,858 @@
+---
+title: "XGBoost调参过程示例"
+author: "Faery Q"
+date: "2018/10/14"
+output: 
+  html_document:
+    keep_md: yes
+
+---
+
+
+
+```{r , include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = "#>")
+```
+
+## 简介
+
+   这是一篇有关XGBoost的文章，参考Aarshay在Python上的XGBoost调参教程 https://www.analyticsvidhya.com/blog/2016/03/complete-guide-parameter-tuning-xgboost-with-codes-python/ 和XGBoost官方说明  https://xgboost.readthedocs.io/en/latest/index.html 。尽量做到浅显易懂。虽然是很老的文章，但是这是迄今我看到的讲的比较清楚的XGBoost调参文章。本文基于R中的XGBoost包进行调参过程。不同的软件语法不同，但算法的原理一致。
+   
+   本文包含三个部分，第一部分是XGBoost简要概述；第二部分是XGBoost参数解释；第三部分是具体调参示例。
+
+
+## XGBoost简介
+   XGBoost是一个经过优化的提升算法,在GBM框架下实现机器学习算法。XGBoost提供了并行树提升（也称为GBDT，GBM），可以快速准确地解决许多数据科学问题。相同的代码上主流的分布式环境中运行（Hadoop的，SGE，MPI），并可以解决超过十亿行数据的问题。XGBoost的原理在网上很多了，也可以参考官方文档 https://xgboost.readthedocs.io/en/latest/tutorials/model.html ，这里就不介绍了。
+   
+### XGBoost优点
+   1、正则化
+
+   GBM实现没有像XGBoost那样的正则化，因此它也有助于减少过度拟合。
+实际上，XGBoost也被称为“正则化提升”技术。
+
+   2、并行处理
+
+   XGBoost实现了并行处理，与GBM相比速度更快。XGBoost还支持Hadoop上的实现。
+
+   3、高灵活性
+
+   XGBoost允许用户定义自定义优化目标和评估标准。
+
+   4、处理缺失值
+
+   XGBoost有一个内置函数的来处理缺失值。用户需要提供与其他观察值不同的值，并将其作为参数传递。 
+   
+   5、树修剪
+   
+   当GBM在分割中遇到负损失时，它将停止分割节点。因此，它更像是一种贪婪的算法。另一方面，XGBoost分割到指定的深度，然后开始向后修剪树并删除没有正增益的分裂。另一个优点是，有时负损失的分割表示-2后可能会出现正损失+10的分裂。GBM会在遇到-2时停止。但是XGBoost会更深入，它会看到分裂的+8和两者的综合效果。
+
+   6、内置交叉验证
+   
+   XGBoost允许用户在每次Boosting的迭代中运行交叉验证，因此很容易在一次运行中获得精确的最佳增强迭代次数。GBM必须运行网格搜索，并且只能测试有限的值。
+   
+   7、继续使用现有模型
+
+   用户可以从上一次运行的最后一次迭代开始训练XGBoost模型。这在某些特定应用中具有显着优势。
+   
+## XGBoost参数含义介绍
+   XGBoost作者将整体参数分为3类：
+   
+   一般参数：指导整体功能
+   Boosting参数：指导每个步骤的个体Boosting（树/回归）
+   学习任务参数：指导执行的优化
+   
+### 一般参数
+
+   一般参数定义了XGBoost的整体功能。
+
+   1、booster [default=gbtree]
+   选择要在每次迭代时运行的模型类型。 它有2个选项：
+   gbtree：基于树的模型
+   gblinear：线性模型
+   
+   2、silent[default = 0]：
+   激活silent设置为1，即不打印正在运行的消息。
+   保持0通常是好的，因为消息可能有助于理解模型。
+   
+   3、nthread [默认为未设置的最大线程数]
+   这用于并行处理，应输入系统中的核心数。如果您希望在所有核心上运行，则不应输入值，并且算法将自动检测。
+   
+### Booster参数
+   虽然有两种类型的Booster，但我在这里只考虑gbtree，因为它总是优于gblinear，因此后者很少使用。
+
+   1、eta [默认值= 0.3]
+   
+   类似于GBM中的学习率。通过缩小每一步的权重，使模型适用性更强。
+   
+   一般情况下,eta的范围：0.01-0.2
+   
+   2、min_child_weight [默认值 = 1]
+   
+   定义每一步boosting所需观察值数量的最小权重总和。这与GBM中的min_child_leaf相似，但并不完全相同。这指的是观察的最小“权重总和”，而GBM具有最小“观察数”。
+   
+   用于控制过拟合。较高的值会阻止模型学习关系，这种关系可能对为树选择的特定样本高度一致。太高的值会导致欠拟合，因此应使用CV进行调整。
+   
+   3、max_depth [默认值 = 6]
+   
+   树的最大深度，与GBM相同。用于控制拟合，因为更高的深度将允许模型学习与特定样本高度一致。应该使用CV进行调整。
+   
+   一般情况下,max_depth的范围：3-10
+   
+   4、max_leaf_nodes
+   
+   树中终端节点或叶子节点的最大数量。可以定义代替max_depth。由于创建了二叉树，因此深度'n'将产生最多2^n个叶子。
+   
+   如果已定义，则GBM将忽略max_depth。
+   
+   5、gamma [默认值 = 0]
+   
+   仅当结果分割给出损失函数的正向减少时，才分割节点。Gamma指定进行拆分所需的最小损失减少量，使算法保守。Gamma依赖损耗函数，可根据损耗函数不同进行调整。
+   
+   6、max_delta_step [默认值 = 0]
+   
+   在最大增量步长中，我们允许每棵树的权重估计。如果该值设置为0，则表示没有约束。如果将其设置为正值，则可以帮助使更新步骤更加保守。通常不适用此参数，但是当类非常不平衡时，它可能有助于logit回归。如果您愿意，可以进一步探索。
+   
+   7、subsample[默认值 = 1]
+   
+   与GBM的subsample参数含义相同。表示每棵树的随机样本抽取比例。较低的值使算法更加保守并防止过度拟合，但过小的值可能导致拟合率较低。
+   
+   一般情况下,subsample范围：0.5-1
+   
+   8、colsample_bytree [默认值 = 1]
+   
+   与GBM中的max_features类似。 表示每个树的随机样本列的比例。
+   
+   一般情况下,colsample_bytree范围：0.5-1
+
+   9、colsample_bylevel [默认值 = 1]
+   
+   表示每个类别中每个拆分的列的子采样率。我不经常使用它，因为subsample和colsample_bytree会为你完成这项工作。但你可以进一步探索。
+   
+   10、lambda [默认值 = 1]
+   
+   关于权重的L2正则项（类似于岭回归）。这用于处理XGBoost的正则化部分。虽然不经常使用它，但应该探索减少过度拟合。
+   
+   11、alpha [默认值= 0]
+   
+   L1正则化项的权重（类似于Lasso回归）。可以在非常高维度的情况下使用，以便算法在实现时运行得更快。
+   
+   12、scale_pos_weight [默认值 = 1]
+   
+   在样本的类别不平衡的情况下，应使用大于0的值，因为它有助于更快的收敛。
+   
+### 学习任务参数
+
+   这些参数用于度量每步boosting后，模型是否优化。
+
+   1、objective[默认值 = reg：linear]
+   
+   定义了要最小化的损失函数。 最常用的值是：
+   
+   （1）binary：logistic
+   
+      logistic回归用于二进制分类，返回预测概率（不是类）
+   （2）multi：softmax
+   
+      multiclass使用softmax目标进行分类，返回预测类（不是概率），还需要设置一个额外的num_class（类数）参数，用于定义唯不同类的数量。
+   （3）multi：softprob
+      
+      与softmax相同，但返回每个数据点真正类属于预测类的预测概率。
+   2、eval_metric [默认值：根据目标函数选取]
+   
+   用于验证数据的度量标准。
+   
+   回归和分类的默认值都为rmse。
+   
+   可选参数：
+   
+    rmse - 均方根误差
+    
+    mae - 平均绝对误差
+    
+    logloss - 负对数似然
+    
+    error - 二进制分类错误率（0.5阈值）
+    
+    merror - 多分类错误率
+    
+    mlogloss - 多类logloss
+    
+    auc - auc曲线下面积
+   3、seed[默认值= 0]
+   随机数种子。可用于生成可重现的结果，也可用于参数调整。
+   
+## 调参过程示例
+
+   本文数据来自 kaggle 经典赛题 Titanic 。训练数据集有 11 个自变量， 1 个因变量，有 891 个观察值。利用特征工程提取所有自变量的特征后，变成了 891 x 313 的 one_hot 矩阵。此数据为本文使用的数据，关于特征提取，有时间我会再写一篇文章。
+   
+   XGBoost 耗费内存较大，我会先把训练模型用的数据，处理好后，储存起来。之后训练模型时先清空内存再读取数据。由于 XGBoost 在进行交叉验证时，用 xgb 矩阵可能比较方便，不会出现这样那样的问题。我在储存训练数据时，直接使用 xgboost 包中的储存 xgb 矩阵的函数 xgb.DMatrix.save( ) 储存成 xgb 矩阵。之后用 xgb.DMatrix( )读进来。
+   
+   接下来就开始训练模型了。😉😉😉
+   
+   首先先看下数据。
+   
+  
+   
+
+
+```{r }
+library(xgboost)
+library(Ckmeans.1d.dp)
+getwd()
+
+# 读取原始数据文件
+
+# 自变量及其列名
+train_xgb <- xgb.DMatrix("./train_xgb")
+train_xgb_name <- readRDS("./train_xgb_name.R")
+colnames(train_xgb) <- make.names(train_xgb_name)
+head(train_xgb_name)
+print(train_xgb,verbose = FALSE)
+```
+具体各变量值的意义见 Titanic 数据词典。 https://www.kaggle.com/c/titanic/data
+
+```{r }
+# 因变量
+train_xgb_label <- getinfo(train_xgb, 'label')
+```
+因变量是是否存活，0 没有存活。1 存活。
+
+## 参数调整的一般方法
+
+我们将在这里使用类似于GBM的方法。 要执行的各个步骤是：
+
+1、选择相对较高的学习率
+
+通常学习率为0.1，但介于 0.05 到 0.3 之间，应该适用于不同的问题。
+确定此学习率下的最佳树木数量。
+
+XGBoost 有一个非常有用的函数叫做“cv”，它在每次 boosting 时执行交叉验证，从而返回所需的最佳树数。
+
+2、调整树特定参数
+
+在已确定的学习率下，调整树的参数 
+max_depth，min_child_weight，gamma，subsample，colsample_bytree
+
+3、调整 xgboost 的正则化参数
+
+lambda，alpha，这有助于降低模型复杂性并提高性能。
+
+4、降低学习率并确定最佳参数。
+
+## 调参示例
+
+### 第 1 步：调整学习速率和估计器数量，为了第 2 步调整基于树的参数。
+
+为了确定 boosting 参数，我们需要设置其他参数的一些初始值。
+
+我们通常选取以下值作为初始值：
+
+max_depth = 5：在3-10之间。 我从5开始，也可以选择不同的数字。 4-6也可以。
+
+min_child_weight = 1：选择较小的值是因为它是高度不平衡的类问题，并且可以使叶节点内的样本数量较小。
+
+
+```{r }
+table(train_xgb_label)
+```
+
+
+gamma = 0：可以选择较小的值，如 0.1-0.2。在以后要进行调整。
+
+subsample，colsample_bytree = 0.8：这是一个常用的使用起始值。 这两个参数一般介于0.5-0.9之间。
+
+scale_pos_weight = 1：用于样本及其不平衡的情况下。
+
+以上所有内容仅为初步估算值，稍后会进行调整。
+
+让我们在这里采用0.1的默认学习率，并使用 R 的 xgboost 包的 xgb.cv( ) 估计boosting的最佳次数。 上面定义的参数将为我们完成。
+
+```{r }
+# nrounds
+set.seed(100)
+xgb_1_nrounds <- xgb.cv(
+  data = train_xgb, 
+  max.depth = 5, 
+  eta = 0.1, nthread = 2, 
+  nrounds = 1000, 
+  objective = "binary:logistic", 
+  max_delta_step=4, 
+  subsample = 0.8, 
+  verbose = 0 ,
+  nfold = 5,  
+  metrics = list("rmse","auc","error") ,
+  gamma = 0,
+  colsample_bytree=0.8, 
+  scale_pos_weight = 1, 
+  min_child_weight = 1)
+eva_log <- xgb_1_nrounds$evaluation_log
+eva_log[eva_log$test_auc_mean==max(eva_log$test_auc_mean),]
+
+```
+
+可以看到，在 boosting 的学习率 0.1 下，nrounds (boosting次数)为 77，交叉验证下的所有测试集 auc 的平均值最高，我们可以看下各个变量的重要性。
+
+```{r }
+set.seed(100)
+xgb_1_nrounds <- xgb.train(
+  data = train_xgb, 
+  max.depth = 5, 
+  eta = 0.1, nthread = 2, 
+  nrounds = 1000, 
+  objective = "binary:logistic", 
+  max_delta_step=4, 
+  subsample = 0.8, 
+  verbose = 0 ,
+  nfold = 5,  
+  metrics = list("rmse","auc","error") ,
+  gamma = 0,
+  colsample_bytree=0.8, 
+  scale_pos_weight = 1, 
+  min_child_weight = 1)
+importance_nrounds <- xgb.importance(train_xgb_name, model = xgb_1_nrounds)
+gg <- xgb.ggplot.importance(importance_nrounds, measure = "Frequency", rel_to_first = TRUE)
+gg + ggplot2::ylab("Frequency")
+```
+
+
+### 第 2 步：调整 max_depth 和 min_child_weight
+
+它们对模型结果的影响最大。 首先，让我们设置更宽的范围，然后我们将为更小的范围执行另一次迭代。
+
+重要说明：我将在本节中搜索一些重型网格，这可能需要15-30分钟甚至更长的时间才能运行，具体取决于您的系统。 您可以根据系统可以处理的内容来更改要测试的值的数量。
+
+
+```{r }
+xgb_depth_child_weight_perfect <- function(
+  depth, 
+  child_weight, 
+  input_data, 
+  input_eta, 
+  input_nrounds, 
+  input_objective, 
+  input_max_delta_step, 
+  input_subsample, 
+  input_verbose, 
+  input_nfold, 
+  input_metrics,
+  input_gamma, 
+  input_colsample_bytree, 
+  input_scale_pos_weight
+  ){
+  last_auc <- 0
+  for (i in 1:length(depth)) {
+    for (j in 1:length(child_weight)) {
+      
+      set.seed(100)
+      depth_child_model <- xgb.cv(
+        max_depth = depth[i], 
+        eta = input_eta , 
+        metrics =input_metrics, 
+        min_child_weight = child_weight[j], 
+        data = input_data,  
+        nrounds =input_nrounds,
+        max_delta_step = input_max_delta_step,
+        subsample = input_subsample, 
+        verbose = input_verbose, 
+        nfold = input_nfold, 
+        gamma = input_gamma,
+        colsample_bytree = input_colsample_bytree,
+        scale_pos_weight = input_scale_pos_weight,
+        objective = input_objective,
+        )
+      depth_child_model_eva_log <- depth_child_model$evaluation_log
+      now_auc <- max(depth_child_model_eva_log$test_auc_mean)
+      tmp <- now_auc
+      if(now_auc > last_auc){
+        last_auc <- tmp
+        perfect_depth <- depth[i]
+        perfect_child_weight <- child_weight[j]
+      }
+      }
+  }
+  print("perfect_depth")
+  print(perfect_depth)
+  print("perfect_child_weight")
+  print( perfect_child_weight)
+}
+```
+此函数是为了测量在 max_depth 和 min_child_weight 所有组合中，哪个组合的模型交叉验证下的所有测试集 auc 的平均值最高。
+
+返回max_depth 和 min_child_weight效果最好的组合
+```{r }
+xgb_depth_child_weight_perfect(
+  input_data = train_xgb ,
+  depth = 3:6,
+  input_eta = 0.1,
+  input_nrounds = 77,
+  input_objective = "binary:logistic",
+  input_max_delta_step=4,
+  input_subsample = 0.8,
+  input_verbose = 0,
+  input_nfold = 5,
+  input_metrics = list("rmse","auc","error"),
+  input_gamma = 0,
+  input_colsample_bytree=0.8,
+  input_scale_pos_weight = 1,
+  child_weight = seq(0,1, by=0.2)
+  )
+set.seed(100)
+xg_2_depth_chlid_weight <- xgb.cv(
+  data = train_xgb, 
+  max_depth= 6, 
+  eta = 0.1, 
+  nrounds = 77, 
+  bjective = "binary:logistic", 
+  max_delta_step = 4, 
+  subsample = 0.8,
+  verbose = 0, 
+  gamma = 0, 
+  colsample_bytree = 0.8, 
+  scale_pos_weight = 1, 
+  min_child_weight = 0,
+  nfold = 5, 
+  metrics = list("rmse","auc","error"),
+  )
+eva_log <- xg_2_depth_chlid_weight$evaluation_log
+eva_log[eva_log$test_auc_mean == max(eva_log$test_auc_mean),]
+```
+可以看出，test_auc 已经从 0.8646 提升到 0.8727。可以看下各个变量的重要性。
+
+```{r }
+set.seed(100)
+xg_2_depth_chlid_weight <- xgb.train(
+  data = train_xgb, 
+  max_depth = 6, 
+  eta = 0.1, 
+  nrounds = 77, 
+  bjective = "binary:logistic", 
+  max_delta_step = 4, 
+  subsample = 0.8,
+  verbose = 0, 
+  gamma = 0, 
+  colsample_bytree = 0.8, 
+  scale_pos_weight = 1, 
+  min_child_weight = 0,
+  nfold = 5, 
+  metrics = list("rmse","auc","error")
+  )
+importance_depth_child_weight <- xgb.importance(train_xgb_name, model = xg_2_depth_chlid_weight)
+gg <- xgb.ggplot.importance(importance_depth_child_weight[1:15,], measure = "Frequency", rel_to_first = TRUE)
+gg + ggplot2::ylab("Frequency")
+```
+
+### 第 3 步：调整 gamma 值
+现在让我们使用上面已经调整了的参数，调整伽马值。 gamma可以采用各种值，但我会在这里测试5个值。 你也可以探索更精确的值。
+
+```{r }
+xgb_gamma_perfect <- function(
+  depth, 
+  child_weight, 
+  input_data, 
+  input_eta, 
+  input_nrounds, 
+  input_objective, 
+  input_max_delta_step, 
+  input_subsample, 
+  input_verbose, 
+  input_nfold, 
+  input_metrics, 
+  input_gamma, 
+  input_colsample_bytree, 
+  input_scale_pos_weight){
+  last_auc <- 0
+  for (i in 1:length(input_gamma)) {
+    set.seed(100)
+    depth_child_model <- xgb.cv(
+      gamma = input_gamma[i], 
+      eta = input_eta ,
+      metrics = input_metrics, 
+      min_child_weight = child_weight, 
+      data = input_data,
+      nrounds = input_nrounds,
+      max_delta_step = input_max_delta_step,
+      subsample = input_subsample, 
+      verbose = input_verbose, 
+      nfold = input_nfold,
+      max_depth = depth,
+      colsample_bytree = input_colsample_bytree,
+      scale_pos_weight = input_scale_pos_weight,
+      objective = input_objective
+      )
+    depth_child_model_eva_log <- depth_child_model$evaluation_log
+    now_auc <- max(depth_child_model_eva_log$test_auc_mean)
+    tmp <- now_auc
+    if(now_auc>last_auc){
+      last_auc <- tmp
+      perfect_gamma <- input_gamma[i]
+    }
+  }
+  print("perfect_gamma")
+  print(perfect_gamma)
+}
+xgb_gamma_perfect(
+  input_data = train_xgb, 
+  depth = 6, 
+  input_eta = 0.1, 
+  input_nrounds = 77, 
+  input_objective = "binary:logistic",  
+  input_max_delta_step=4,  
+  input_subsample = 0.8, 
+  input_verbose = 0 ,
+  input_nfold = 5,  
+  input_metrics = list("rmse","auc","error") ,
+  input_gamma = seq(0, 0.5, by = 0.1),
+  input_colsample_bytree=0.8, 
+  input_scale_pos_weight = 1, 
+  child_weight = 0)
+```
+gamma 最优值为 0。没有变化。
+### 第 4 步：调整 subsample 和 colsample_bytree
+下一步将尝试subsample和colsample_bytree的不同组合。 让我们分两个阶段进行，并且两者的值均为0.6,0.7,0.8,0.9。
+```{r }
+xgb_subsample_coltree_perfect <- function(
+  depth, 
+  child_weight, 
+  input_data, 
+  input_eta, 
+  input_nrounds, 
+  input_objective, 
+  input_max_delta_step, 
+  para_subsample, 
+  input_verbose, 
+  input_nfold, 
+  input_metrics, 
+  input_gamma,
+  para_colsample_bytree, 
+  input_scale_pos_weight
+  ){
+  last_auc <- 0
+  for (i in 1:length(para_subsample)) {
+    for (j in 1:length(para_colsample_bytree)) {
+      set.seed(100)
+      depth_child_model <- xgb.cv(
+        max_depth = depth, 
+        eta = input_eta ,
+        metrics = input_metrics, 
+        min_child_weight = child_weight, 
+        data = input_data,
+        nrounds = input_nrounds,
+        max_delta_step=input_max_delta_step,
+        subsample=para_subsample[i], 
+        verbose=input_verbose,
+        nfold=input_nfold, 
+        gamma=input_gamma,
+        colsample_bytree=para_colsample_bytree[j],
+        scale_pos_weight=input_scale_pos_weight,
+        objective=input_objective
+        )
+      depth_child_model_eva_log <-
+        depth_child_model$evaluation_log
+      now_auc <- max(depth_child_model_eva_log$test_auc_mean)
+      tmp <- now_auc
+      if(now_auc>last_auc){
+        last_auc <- tmp
+        perfect_subsample <- para_subsample[i]
+        perfect_colsample_bytree <- para_colsample_bytree[j]
+      }
+    }
+  }
+  print("perfect_subsample")
+  print(perfect_subsample)
+  print("perfect_colsample_bytree")
+  print(perfect_colsample_bytree)
+}
+xgb_subsample_coltree_perfect(
+  input_data = train_xgb, 
+  depth = 6, 
+  input_eta = 0.1, 
+  input_nrounds = 77, 
+  input_objective = "binary:logistic",  
+  input_max_delta_step=4,  
+  para_subsample = seq(0.6, 1, by=0.1), 
+  input_verbose = 0 ,
+  input_nfold = 5,  
+  input_metrics = list("rmse","auc","error") ,
+  input_gamma = 0,
+  para_colsample_bytree = seq(0.6, 1, by=0.1),
+  input_scale_pos_weight = 1, 
+  child_weight = 0
+  )
+set.seed(100)
+xg_4_subsample_coltree <- xgb.cv(
+  data = train_xgb, 
+  max_depth = 6, 
+  eta = 0.1, 
+  nrounds = 77, 
+  bjective = "binary:logistic", 
+  max_delta_step = 4, 
+  subsample = 0.9,
+  verbose = 0, 
+  gamma = 0, 
+  colsample_bytree = 1, 
+  scale_pos_weight = 1, 
+  min_child_weight = 0,
+  nfold = 5, 
+  metrics = list("rmse","auc","error")
+  )
+eva_log <- xg_4_subsample_coltree$evaluation_log
+eva_log[eva_log$test_auc_mean == max(eva_log$test_auc_mean),]
+```
+可以看出，test_auc 已经从 0.8727 提升到 0.8819。
+
+接下来，缩小搜索范围。
+
+```{r }
+xgb_subsample_coltree_perfect(
+  input_data = train_xgb, 
+  depth = 6, 
+  input_eta = 0.1, 
+  input_nrounds = 77, 
+  input_objective = "binary:logistic",  
+  input_max_delta_step = 4, 
+  para_subsample = seq(0.8, 1, by=0.025), 
+  input_verbose = 0 ,
+  input_nfold = 5, 
+  input_metrics = list("rmse","auc","error") ,
+  input_gamma = 0,
+  para_colsample_bytree = seq(0.8, 1, by=0.05),
+  input_scale_pos_weight = 1, 
+  child_weight = 0
+  )
+```
+结果不变。不需要调整。
+```{r }
+set.seed(100)
+xg_4_subsample_coltree <- xgb.train(
+  data = train_xgb, 
+  max_depth = 6, 
+  eta = 0.1, 
+  nrounds = 70, 
+  bjective = "binary:logistic", 
+  max_delta_step = 4, 
+  subsample = 0.9,
+  verbose = 0, 
+  gamma = 0, 
+  colsample_bytree = 1, 
+  scale_pos_weight = 1, 
+  min_child_weight = 0,
+  nfold = 5, 
+  metrics = list("rmse","auc","error")
+  )
+importance_subsample_coltree <- xgb.importance(train_xgb_name, model = xg_4_subsample_coltree)
+gg <- xgb.ggplot.importance(importance_subsample_coltree[1:15,], measure = "Frequency", rel_to_first = TRUE)
+gg + ggplot2::ylab("Frequency")
+```
+
+### 第 5 步：调整正则化参数
+
+下一步是应用正则化来减少过度拟合。 虽然许多人不使用这些参数， 但我们应该试试。 我将在这里调整 reg_alpha 值。
+```{r }
+xgb_reg_alpha_perfect <- function(
+  depth, 
+  child_weight, 
+  input_data, 
+  input_eta, 
+  input_nrounds, 
+  input_objective,
+  input_max_delta_step, 
+  input_subsample,
+  input_verbose, 
+  input_nfold, 
+  input_metrics, 
+  input_gamma, 
+  input_colsample_bytree,
+  input_scale_pos_weight,
+  input_reg_alpha
+  ){
+  last_auc <- 0
+  for (i in 1:length(input_reg_alpha)) {
+    set.seed(100)
+    depth_child_model <- xgb.cv(
+      max_depth = depth, 
+      reg_alpha = input_reg_alpha[i], 
+      eta = input_eta ,
+      metrics = input_metrics,
+      min_child_weight = child_weight, 
+      data = input_data,  
+      nrounds = input_nrounds,
+      max_delta_step = input_max_delta_step,
+      subsample = input_subsample, 
+      verbose = input_verbose, 
+      nfold = input_nfold, 
+      max_depth = depth, 
+      colsample_bytree = input_colsample_bytree,
+      scale_pos_weight = input_scale_pos_weight,
+      objective = input_objective)
+    depth_child_model_eva_log <- depth_child_model$evaluation_log
+    now_auc <- max(depth_child_model_eva_log$test_auc_mean)
+    tmp <- now_auc
+    if(now_auc>last_auc){
+      last_auc <- tmp
+      perfect_reg_alpha <- input_reg_alpha[i]
+    }
+  }
+  print("perfect_reg_alpha")
+  print(perfect_reg_alpha)
+}
+xgb_reg_alpha_perfect(
+  input_data = train_xgb, 
+  depth = 6, 
+  input_eta = 0.1, 
+  input_nrounds = 77, 
+  input_objective = "binary:logistic", 
+  input_max_delta_step = 4,  
+  input_subsample = 0.9, 
+  input_verbose = 0 ,
+  input_nfold = 5,  
+  input_metrics = list("rmse","auc","error") ,
+  input_gamma = 0,
+  input_colsample_bytree = 1,
+  input_scale_pos_weight = 1, 
+  child_weight = 0, 
+  input_reg_alpha = c(0.00001, 0.01, 0.1, 1, 100))
+set.seed(100)
+xg_5_reg_alpha <- xgb.cv(
+  data = train_xgb, 
+  max_depth = 6, 
+  eta = 0.1, 
+  nrounds = 77, 
+  bjective = "binary:logistic", 
+  max_delta_step = 4, 
+  subsample = 0.9,
+  verbose = 0, 
+  gamma = 0, 
+  colsample_bytree = 1, 
+  scale_pos_weight = 1, 
+  min_child_weight = 0,
+  nfold = 5, 
+  metrics = list("rmse","auc","error"),
+  reg_alpha = 0.00001
+  )
+eva_log <- xg_5_reg_alpha$evaluation_log
+eva_log[eva_log$test_auc_mean == max(eva_log$test_auc_mean),]
+```
+可以看出，test_auc 已经从 0.8819 提升到 0.8820。
+```{r }
+xgb_reg_alpha_perfect(
+  input_data = train_xgb, 
+  depth = 6, 
+  input_eta = 0.1, 
+  input_nrounds = 77, 
+  input_objective = "binary:logistic", 
+  input_max_delta_step = 4,  
+  input_subsample = 0.9, 
+  input_verbose = 0 ,
+  input_nfold = 5,  
+  input_metrics = list("rmse","auc","error") ,
+  input_gamma = 0,
+  input_colsample_bytree = 1,
+  input_scale_pos_weight = 1, 
+  child_weight = 0, 
+  input_reg_alpha = seq(0.00001, 0.0001, by = 0.00002))
+```
+看下每个变量的重要性。
+```{r }
+set.seed(100)
+xg_5_reg_alpha <- xgb.train(
+  data = train_xgb, 
+  max_depth = 6, 
+  eta = 0.1, 
+  nrounds = 69, 
+  bjective = "binary:logistic", 
+  max_delta_step = 4, 
+  subsample = 0.9,
+  verbose = 0, 
+  gamma = 0, 
+  colsample_bytree = 1, 
+  scale_pos_weight = 1, 
+  min_child_weight = 0,
+  nfold = 5, 
+  metrics = list("rmse","auc","error"),
+  reg_alpha = 0.00001
+  )
+importance_reg_alpha <- xgb.importance(train_xgb_name, model = xg_5_reg_alpha)
+gg <- xgb.ggplot.importance(importance_subsample_coltree[1:15,], measure = "Frequency", rel_to_first = TRUE)
+gg + ggplot2::ylab("Frequency")
+```
+### 第 6 步：降低学习率
+
+最后，我们应该降低学习率并增加boosting次数。再次使用xgboost.cv( )函数。
+```{r }
+set.seed(100)
+xg_6_eta <- xgb.cv(
+  data = train_xgb, 
+  max_depth= 6, 
+  eta = 0.01, 
+  nrounds = 5000, 
+  objective = "binary:logistic", 
+  max_delta_step = 4, 
+  subsample = 0.9,
+  verbose = 0,
+  gamma = 0, 
+  colsample_bytree = 1, 
+  scale_pos_weight = 1, 
+  min_child_weight = 0,
+  nfold = 5, 
+  metrics = list("rmse","auc","error"),
+  reg_alpha = 0.00001
+  )
+eva_log <- xg_6_eta$evaluation_log
+eva_log[eva_log$test_auc_mean == max(eva_log$test_auc_mean),]
+```
+可以看出，test_auc 没有提高。
+
+```{r }
+set.seed(100)
+xg_6_eta <- xgb.cv(
+  data = train_xgb, 
+  max_depth= 6, 
+  eta = 0.05, 
+  nrounds = 1000, 
+  objective = "binary:logistic", 
+  max_delta_step = 4, 
+  subsample = 0.9,
+  verbose = 0,
+  gamma = 0, 
+  colsample_bytree = 1, 
+  scale_pos_weight = 1, 
+  min_child_weight = 0,
+  nfold = 5, 
+  metrics = list("rmse","auc","error"),
+  reg_alpha = 0.00001
+  )
+eva_log <- xg_6_eta$evaluation_log
+eva_log[eva_log$test_auc_mean == max(eva_log$test_auc_mean),]
+```
+可以看出，test_auc 没有提高。
+
+```{r }
+set.seed(100)
+xg_6_eta <- xgb.cv(
+  data = train_xgb, 
+  max_depth= 6, 
+  eta = 0.08, 
+  nrounds = 500, 
+  objective = "binary:logistic", 
+  max_delta_step = 4, 
+  subsample = 0.9,
+  verbose = 0,
+  gamma = 0, 
+  colsample_bytree = 1, 
+  scale_pos_weight = 1, 
+  min_child_weight = 0,
+  nfold = 5, 
+  metrics = list("rmse","auc","error"),
+  reg_alpha = 0.00001
+  )
+eva_log <- xg_6_eta$evaluation_log
+eva_log[eva_log$test_auc_mean == max(eva_log$test_auc_mean),]
+```
+可以看出，test_auc 没有提高。
+现在我们可以看到性能的显着提升( test_auc 从 0.8646 提升到 0.8820)，参数调整的效果更加清晰。使用调参后的模型估计结果，Kaggle 后台得分从 0.77 提升到 0.78 。
+当然使用随机森林可以随便做到0.80。
+
+## 题外之话
+调参之后，我想分享两个想法：
+仅使用参数调整或略微更好的模型很难获得性能上的巨大飞跃。test_auc 从 0.8646 提升到 0.8820，这是一个不错的改进，但不能显著获得性能上的巨大飞跃。
+通过特征工程，使用多个不同模型 stacking 等其他方法可以获得显着的飞跃。
